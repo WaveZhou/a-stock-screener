@@ -48,6 +48,7 @@ sys.path.append('.')
 from data_collector import AStockDataCollector
 from email_sender import EmailSender
 import os
+import json
 
 collector = AStockDataCollector()
 result = collector.run_screening()
@@ -55,17 +56,29 @@ result = collector.run_screening()
 if result['success']:
     print(f'筛选完成，共 {len(result[\"stocks\"])} 只股票')
     
-    # 发送邮件
+    # 保存结果到文件（供后续步骤使用）
+    with open('screening_result.json', 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    print('结果已保存到 screening_result.json')
+    
+    # 发送邮件（失败不阻塞）
     try:
         sender = EmailSender()
         sender.send_screening_result(result['stocks'])
         print('邮件发送成功')
     except Exception as e:
         print(f'邮件发送失败: {e}')
+        print('继续执行...')
 else:
     print(f'筛选失败: {result.get(\"error\", \"未知错误\")}')
     sys.exit(1)
 "
+        
+    - name: Copy data to api directory
+      run: |
+        # 复制数据文件到api目录，供Vercel读取
+        cp screening_result.json api/screening_result.json || true
+        cp data/latest_screening_result.json api/latest_screening_result.json || true
         
     - name: Commit results
       run: |
@@ -73,6 +86,8 @@ else:
         git config --local user.name "GitHub Action"
         git add data/
         git add screening_result.json || true
+        git add api/screening_result.json || true
+        git add api/latest_screening_result.json || true
         git diff --staged --quiet || git commit -m "更新股票筛选结果 - $(date +'%Y-%m-%d %H:%M:%S')"
         
     - name: Push changes
