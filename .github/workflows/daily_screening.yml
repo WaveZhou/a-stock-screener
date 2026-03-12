@@ -72,6 +72,7 @@ else:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add data/
+        git add screening_result.json || true
         git diff --staged --quiet || git commit -m "更新股票筛选结果 - $(date +'%Y-%m-%d %H:%M:%S')"
         
     - name: Push changes

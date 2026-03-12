@@ -181,9 +181,20 @@ class AStockDataCollector:
         latest_csv = os.path.join(self.data_dir, 'latest_screening_result.csv')
         stocks_df.to_csv(latest_csv, index=False, encoding='utf-8-sig')
         
+        # 同时保存到根目录，供Vercel直接读取
+        root_json_path = os.path.join(os.path.dirname(__file__), 'screening_result.json')
+        result_data = {
+            'stocks': stocks_df.to_dict('records'),
+            'timestamp': datetime.now().isoformat(),
+            'count': len(stocks_df)
+        }
+        with open(root_json_path, 'w', encoding='utf-8') as f:
+            json.dump(result_data, f, ensure_ascii=False, indent=2)
+        
         print(f"\n结果已保存到:")
         print(f"  CSV: {csv_path}")
         print(f"  JSON: {json_path}")
+        print(f"  Root JSON: {root_json_path}")
         
         return csv_path, json_path
     
