@@ -67,12 +67,20 @@ else:
     sys.exit(1)
 "
         
+    - name: Copy data to api directory
+      run: |
+        # 复制数据文件到api目录，供Vercel读取
+        cp screening_result.json api/screening_result.json || true
+        cp data/latest_screening_result.json api/latest_screening_result.json || true
+        
     - name: Commit results
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add data/
         git add screening_result.json || true
+        git add api/screening_result.json || true
+        git add api/latest_screening_result.json || true
         git diff --staged --quiet || git commit -m "更新股票筛选结果 - $(date +'%Y-%m-%d %H:%M:%S')"
         
     - name: Push changes

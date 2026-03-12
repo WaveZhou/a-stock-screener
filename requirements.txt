@@ -9,3 +9,4 @@ apscheduler
 pydantic
 python-multipart
 requests
+mangum

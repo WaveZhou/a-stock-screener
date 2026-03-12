@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 from datetime import datetime, timedelta
 import random
+import os
 
 DEFAULT_STOCKS = [
     {"代码": "300001", "名称": "特锐德", "最新价": 22.58, "涨跌幅": 5.23, "总市值": 2358000000, "流通市值": 2100000000, "净利润同比增长率": 158.5, "成交额": 125000000},
@@ -347,115 +348,50 @@ class handler(BaseHTTPRequestHandler):
     
     def do_screening(self):
         """
-        执行股票筛选 - 使用腾讯财经API获取A股实时行情数据
-        直接在Vercel Serverless环境中获取数据，无需依赖GitHub
+        执行股票筛选 - 返回最新的本地数据
+        由于Vercel Serverless环境无法直接访问外部API，
+        数据由GitHub Actions每日更新到 screening_result.json
         """
+        # 尝试读取本地数据文件
         try:
-            stocks = self.fetch_from_tencent_api()
-            if stocks and len(stocks) > 0:
-                return {
-                    'success': True,
-                    'stocks': stocks,
-                    'timestamp': datetime.now().isoformat(),
-                    'message': '成功获取实时行情数据（腾讯财经）'
-                }
+            # 首先尝试读取根目录的 screening_result.json
+            result_path = os.path.join(os.path.dirname(__file__), '..', 'screening_result.json')
+            if os.path.exists(result_path):
+                with open(result_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if data and 'stocks' in data and len(data['stocks']) > 0:
+                        return {
+                            'success': True,
+                            'stocks': data['stocks'],
+                            'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                            'message': '已获取最新筛选数据'
+                        }
         except Exception as e:
-            print(f"获取实时数据失败: {e}")
+            print(f"读取根目录数据文件失败: {e}")
         
-        # 如果获取失败，返回默认数据
+        try:
+            # 尝试读取 api 目录下的数据文件
+            result_path = os.path.join(os.path.dirname(__file__), 'screening_result.json')
+            if os.path.exists(result_path):
+                with open(result_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if data and 'stocks' in data and len(data['stocks']) > 0:
+                        return {
+                            'success': True,
+                            'stocks': data['stocks'],
+                            'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                            'message': '已获取最新筛选数据'
+                        }
+        except Exception as e:
+            print(f"读取api目录数据文件失败: {e}")
+        
+        # 如果都没有，返回默认数据
         return {
             'success': True,
             'stocks': DEFAULT_STOCKS,
             'timestamp': datetime.now().isoformat(),
-            'message': '获取实时数据失败，显示示例数据。请稍后重试。'
+            'message': '显示示例数据。GitHub Actions每天14:30自动更新真实数据。'
         }
-    
-    def fetch_from_tencent_api(self):
-        """
-        从腾讯财经API获取A股实时行情数据
-        获取市值较小的股票，并按涨跌幅排序（模拟净利润增速筛选）
-        """
-        import urllib.request
-        import ssl
-        
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        # 腾讯财经API - 获取沪深A股行情
-        # 使用几个小市值股票代码作为示例（实际应该获取全市场数据）
-        # 这里使用一批小市值股票的代码
-        stock_codes = [
-            'sz300001', 'sz300002', 'sz300003', 'sz300004', 'sz300005',
-            'sz300006', 'sz300007', 'sz300008', 'sz300009', 'sz300010',
-            'sz300011', 'sz300012', 'sz300013', 'sz300014', 'sz300015',
-            'sz300016', 'sz300017', 'sz300018', 'sz300019', 'sz300020',
-            'sz300021', 'sz300022', 'sz300023', 'sz300024', 'sz300025',
-            'sz300026', 'sz300027', 'sz300028', 'sz300029', 'sz300030',
-            'sz300031', 'sz300032', 'sz300033', 'sz300034', 'sz300035',
-            'sh688001', 'sh688002', 'sh688003', 'sh688004', 'sh688005'
-        ]
-        
-        all_stocks = []
-        
-        # 分批获取股票数据（每批最多20只）
-        batch_size = 20
-        for i in range(0, len(stock_codes), batch_size):
-            batch = stock_codes[i:i+batch_size]
-            codes_str = ','.join(batch)
-            url = f"http://qt.gtimg.cn/q={codes_str}"
-            
-            try:
-                req = urllib.request.Request(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': 'http://stock.finance.qq.com/'
-                })
-                
-                with urllib.request.urlopen(req, timeout=5, context=ctx) as response:
-                    content = response.read().decode('gbk')
-                    
-                    # 解析腾讯财经返回的数据
-                    # 格式: v_sz300001="1~特锐德~300001~...";
-                    for line in content.split(';'):
-                        line = line.strip()
-                        if not line or '="' not in line:
-                            continue
-                        
-                        try:
-                            # 提取数据部分
-                            data_part = line.split('="')[1].rstrip('"')
-                            fields = data_part.split('~')
-                            
-                            if len(fields) >= 45:
-                                stock = {
-                                    '代码': fields[2],
-                                    '名称': fields[1],
-                                    '最新价': float(fields[3]) if fields[3] else 0,
-                                    '昨收': float(fields[4]) if fields[4] else 0,
-                                    '今开': float(fields[5]) if fields[5] else 0,
-                                    '最高': float(fields[33]) if fields[33] else 0,
-                                    '最低': float(fields[34]) if fields[34] else 0,
-                                    '涨跌幅': float(fields[32]) if fields[32] else 0,
-                                    '成交量': float(fields[36]) if fields[36] else 0,
-                                    '成交额': float(fields[37]) if fields[37] else 0,
-                                    '总市值': float(fields[44]) if fields[44] else 0,
-                                    '流通市值': float(fields[45]) if fields[45] else 0,
-                                    '净利润同比增长率': float(fields[32]) * 10 if fields[32] else 0  # 用涨跌幅模拟
-                                }
-                                
-                                # 只添加市值小于100亿的股票（小市值）
-                                if stock['总市值'] > 0 and stock['总市值'] < 10000000000:
-                                    all_stocks.append(stock)
-                        except Exception as e:
-                            continue
-                            
-            except Exception as e:
-                print(f"获取批次数据失败: {e}")
-                continue
-        
-        # 按涨跌幅排序（模拟净利润增速），取前30
-        all_stocks.sort(key=lambda x: x['净利润同比增长率'], reverse=True)
-        return all_stocks[:30]
     
     def get_kline(self, code):
         data_list = []
