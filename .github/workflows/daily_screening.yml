@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: '5 7 * * 1-5'
     - cron: '30 6 * * 1-5'
+  push:
+    branches: [main, master]
   workflow_dispatch:
     inputs:
       reason:
@@ -20,6 +22,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
+      with:
+        ref: main
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -45,4 +49,4 @@ jobs:
         git config --local user.name "GitHub Action"
         git add data/ screening_result.json api/screening_result.json api/latest_screening_result.json || true
         git diff --staged --quiet || git commit -m "更新股票筛选结果 - $(date +'%Y-%m-%d %H:%M:%S')"
-        git push
+        git push origin main
