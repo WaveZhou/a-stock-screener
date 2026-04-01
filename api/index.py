@@ -89,7 +89,7 @@ HTML_CONTENT = '''<!DOCTYPE html>
     <div class="container">
         <div class="header">
             <h1>A股小市值股票筛选系统</h1>
-            <p>市值倒数1000名中，归母净利润增速前30</p>
+            <p>市值倒数100名中，归母净利润增速前30</p>
         </div>
         <div class="stats-bar">
             <div class="stat-card"><h3>筛选股票数</h3><div class="value" id="stockCount">30</div></div>
@@ -339,12 +339,8 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({'error': 'Not found'}).encode())
     
     def get_stocks(self):
-        return {
-            'success': True,
-            'stocks': DEFAULT_STOCKS,
-            'timestamp': datetime.now().isoformat(),
-            'message': '示例数据 - 点击立即刷新数据获取实时数据'
-        }
+        """页面加载时获取数据 - 优先读取本地真实数据"""
+        return self.do_screening()
     
     def do_screening(self):
         """

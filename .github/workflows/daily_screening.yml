@@ -2,9 +2,7 @@ name: Daily Stock Screening
 
 on:
   schedule:
-    # 工作日15:05执行（收盘后5分钟，获取收盘数据）
     - cron: '5 7 * * 1-5'
-    # 工作日14:30执行（盘中筛选）
     - cron: '30 6 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -16,82 +14,35 @@ on:
 jobs:
   screen-stocks:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-      
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-        
-    - name: Cache pip packages
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install akshare pandas numpy requests
-        
+        pip install pandas requests
+
     - name: Run stock screening
-      env:
-        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-      run: |
-        echo "开始执行股票筛选..."
-        python -c "
-import sys
-sys.path.append('.')
-from data_collector import AStockDataCollector
-from email_sender import EmailSender
-import os
+      run: python run_screening.py
 
-collector = AStockDataCollector()
-result = collector.run_screening()
-
-if result['success']:
-    print(f'筛选完成，共 {len(result[\"stocks\"])} 只股票')
-    
-    # 发送邮件
-    try:
-        sender = EmailSender()
-        sender.send_screening_result(result['stocks'])
-        print('邮件发送成功')
-    except Exception as e:
-        print(f'邮件发送失败: {e}')
-else:
-    print(f'筛选失败: {result.get(\"error\", \"未知错误\")}')
-    sys.exit(1)
-"
-        
     - name: Copy data to api directory
       run: |
-        # 复制数据文件到api目录，供Vercel读取
         cp screening_result.json api/screening_result.json || true
         cp data/latest_screening_result.json api/latest_screening_result.json || true
-        
-    - name: Commit results
+
+    - name: Commit and push results
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add data/
-        git add screening_result.json || true
-        git add api/screening_result.json || true
-        git add api/latest_screening_result.json || true
+        git add data/ screening_result.json api/screening_result.json api/latest_screening_result.json || true
         git diff --staged --quiet || git commit -m "更新股票筛选结果 - $(date +'%Y-%m-%d %H:%M:%S')"
-        
-    - name: Push changes
-      uses: ad-m/github-push-action@master
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        branch: ${{ github.ref }}
-        
-    - name: Trigger Vercel Redeploy
-      run: |
-        echo "触发Vercel重新部署以获取最新数据..."
-        # 使用Vercel CLI触发部署
-        npm install -g vercel
-        vercel --token ${{ secrets.VERCEL_TOKEN }} --prod --yes || echo "部署触发失败"
+        git push
