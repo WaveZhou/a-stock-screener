@@ -31,6 +31,8 @@ class AStockDataCollector:
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+        # 绕过系统代理，直连东方财富API
+        session.trust_env = False
         session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                           'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -57,8 +59,8 @@ class AStockDataCollector:
         for host in hosts:
             try:
                 df = self._fetch_stock_list(host)
-                if not df.empty and len(df) > 500:
-                    print(f"  [OK] {host}: 获取到 {len(df)} 只A股")
+                if not df.empty and len(df) > 50:
+                    print(f"  [OK] {host}: 获取到 {len(df)} 只小市值A股")
                     return df
                 print(f"  [WARN] {host}: 仅 {len(df)} 只，换下一个...")
             except Exception as e:
@@ -68,23 +70,25 @@ class AStockDataCollector:
         return pd.DataFrame()
 
     def _fetch_stock_list(self, host):
-        """从指定主机获取股票列表"""
+        """从指定主机获取股票列表 - 直接按市值升序排列获取前200"""
         all_items = []
         page = 1
-        page_size = 5000
+        # 只需要市值最小的股票，按f20(总市值)升序
+        # API最大每页100条，取2页共200条足矣（需要100只，多取些做过滤缓冲）
+        max_pages = 2
 
-        while True:
+        while page <= max_pages:
             url = f"{host}/api/qt/clist/get"
             params = {
                 "pn": str(page),
-                "pz": str(page_size),
+                "pz": "100",
                 "po": "1",
                 "np": "1",
                 "ut": "bd1d9ddb04089700cf9c27f6f7426281",
                 "fltt": "2",
                 "invt": "2",
                 "wbp2u": "|0|0|0|web",
-                "fid": "f3",
+                "fid": "f20",
                 "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
                 "fields": "f2,f3,f5,f6,f8,f12,f14,f15,f16,f17,f18,f20,f21",
                 "_": str(int(time.time() * 1000)),
@@ -105,9 +109,6 @@ class AStockDataCollector:
                 break
 
             all_items.extend(items)
-
-            if len(all_items) >= total:
-                break
             page += 1
             time.sleep(0.5)
 
@@ -260,6 +261,79 @@ class AStockDataCollector:
             return pd.DataFrame(all_records)
         return pd.DataFrame()
 
+    # ─── 多周期涨幅 ─────────────────────────────────
+
+    def get_period_gains_batch(self, stock_codes):
+        """批量获取股票的多周期涨幅（周/月/年）"""
+        print(f"\n5. 计算 {len(stock_codes)} 只股票的多周期涨幅...")
+        results = {}
+        success = 0
+        for i, code in enumerate(stock_codes):
+            try:
+                gains = self._calc_period_gains(code)
+                results[code] = gains
+                if gains:
+                    success += 1
+                if (i + 1) % 10 == 0:
+                    print(f"  已处理 {i+1}/{len(stock_codes)}...")
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"  {code} 失败: {e}")
+                results[code] = {}
+        print(f"  完成: {success}/{len(stock_codes)} 成功")
+        return results
+
+    def _calc_period_gains(self, stock_code):
+        """计算单只股票的周/月/年涨幅"""
+        secid = (f"1.{stock_code}" if stock_code.startswith('6')
+                 else f"0.{stock_code}")
+        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+        params = {
+            'secid': secid,
+            'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+            'fields1': 'f1,f2,f3,f4,f5,f6',
+            'fields2': 'f51,f52,f53',
+            'klt': '101',
+            'fqt': '1',
+            'beg': (datetime.now() - timedelta(days=400)).strftime("%Y%m%d"),
+            'end': datetime.now().strftime("%Y%m%d"),
+        }
+        resp = self.session.get(url, params=params, timeout=15)
+        klines = resp.json().get('data', {}).get('klines', [])
+        if not klines:
+            return {}
+
+        closes, dates = [], []
+        for line in klines:
+            p = line.split(',')
+            if len(p) >= 3:
+                closes.append(float(p[2]))
+                dates.append(p[0])
+
+        if len(closes) < 2:
+            return {}
+
+        latest = closes[-1]
+        gains = {}
+
+        # 周涨幅（5个交易日）
+        if len(closes) >= 6:
+            gains['周涨幅'] = round((latest / closes[-6] - 1) * 100, 2)
+
+        # 月涨幅（20个交易日）
+        if len(closes) >= 21:
+            gains['月涨幅'] = round((latest / closes[-21] - 1) * 100, 2)
+
+        # 年涨幅（年初至今）
+        year_str = datetime.now().strftime("%Y")
+        for i, d in enumerate(dates):
+            if d.startswith(year_str):
+                base = closes[i - 1] if i > 0 else closes[0]
+                gains['年涨幅'] = round((latest / base - 1) * 100, 2)
+                break
+
+        return gains
+
     # ─── K线数据 ─────────────────────────────────────
 
     def get_stock_kline(self, stock_code, period="daily"):
@@ -352,10 +426,20 @@ class AStockDataCollector:
         top30 = merged.sort_values('净利润同比增长率', ascending=False).head(30)
 
         print(f"\n最终筛选出 {len(top30)} 只股票")
+
+        # 6. 计算多周期涨幅
+        stock_codes = top30['代码'].tolist()
+        period_gains = self.get_period_gains_batch(stock_codes)
+        for col in ['周涨幅', '月涨幅', '年涨幅']:
+            top30[col] = top30['代码'].map(
+                lambda c, _col=col: period_gains.get(c, {}).get(_col, 0.0))
+
         print("\n前10只股票预览:")
-        preview = top30[['代码', '名称', '总市值', '净利润同比增长率']].head(10).copy()
+        preview = top30[['代码', '名称', '总市值', '净利润同比增长率',
+                         '周涨幅', '月涨幅', '年涨幅']].head(10).copy()
         preview['总市值'] = (preview['总市值'] / 1e8).round(2)
-        preview.columns = ['代码', '名称', '总市值(亿)', '净利润增速(%)']
+        preview.columns = ['代码', '名称', '总市值(亿)', '净利润增速(%)',
+                           '周涨幅(%)', '月涨幅(%)', '年涨幅(%)']
         print(preview.to_string(index=False))
 
         return top30
