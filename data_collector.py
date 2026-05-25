@@ -353,22 +353,36 @@ class AStockDataCollector:
     # ─── 多周期涨幅 ─────────────────────────────────
 
     def get_period_gains_batch(self, stock_codes):
-        """批量获取股票的多周期涨幅（周/月/年）"""
+        """批量获取股票的多周期涨幅（周/月/年）
+        如果前3只都失败则跳过（API不可达）"""
         print(f"\n5. 计算 {len(stock_codes)} 只股票的多周期涨幅...")
         results = {}
         success = 0
+        fail_streak = 0
+
         for i, code in enumerate(stock_codes):
             try:
                 gains = self._calc_period_gains(code)
                 results[code] = gains
                 if gains:
                     success += 1
+                    fail_streak = 0
+                else:
+                    fail_streak += 1
                 if (i + 1) % 10 == 0:
                     print(f"  已处理 {i+1}/{len(stock_codes)}...")
-                time.sleep(0.3)
+                # 如果连续3只都失败，说明K线API不可达，跳过剩余
+                if fail_streak >= 3 and success == 0:
+                    print(f"  前{i+1}只均无法获取K线，跳过涨幅计算")
+                    break
+                time.sleep(0.2)
             except Exception as e:
                 print(f"  {code} 失败: {e}")
                 results[code] = {}
+                fail_streak += 1
+                if fail_streak >= 3 and success == 0:
+                    print(f"  连续失败，跳过涨幅计算")
+                    break
         print(f"  完成: {success}/{len(stock_codes)} 成功")
         return results
 
@@ -376,7 +390,7 @@ class AStockDataCollector:
         """计算单只股票的周/月/年涨幅（东方财富+新浪双源）"""
         closes, dates = [], []
 
-        # 方案1: 东方财富K线
+        # 方案1: 东方财富K线（短超时，不走重试adapter）
         try:
             secid = (f"1.{stock_code}" if stock_code.startswith('6')
                      else f"0.{stock_code}")
@@ -391,7 +405,9 @@ class AStockDataCollector:
                 'beg': (datetime.now() - timedelta(days=400)).strftime("%Y%m%d"),
                 'end': datetime.now().strftime("%Y%m%d"),
             }
-            resp = self.session.get(url, params=params, timeout=10)
+            # 直接用requests.get，不走有重试的session
+            resp = requests.get(url, params=params, timeout=5,
+                                headers=self.session.headers, verify=True)
             klines = resp.json().get('data', {}).get('klines', [])
             for line in klines:
                 p = line.split(',')
@@ -404,18 +420,14 @@ class AStockDataCollector:
         # 方案2: 新浪K线（如果东方财富失败）
         if len(closes) < 30:
             try:
-                sina_session = requests.Session()
-                sina_session.trust_env = False
-                sina_session.headers.update({
-                    'User-Agent': 'Mozilla/5.0',
-                    'Referer': 'https://finance.sina.com.cn',
-                })
                 prefix = 'sh' if stock_code.startswith('6') else 'sz'
                 url = (f"https://quotes.sina.cn/cn/api/jsonp_v2.php/"
                        f"var/CN_MarketDataService.getKLineData"
                        f"?symbol={prefix}{stock_code}"
                        f"&scale=240&ma=no&datalen=250")
-                resp = sina_session.get(url, timeout=10)
+                resp = requests.get(url, timeout=5,
+                                    headers={'User-Agent': 'Mozilla/5.0',
+                                             'Referer': 'https://finance.sina.com.cn'})
                 text = resp.text
                 # 解析 JSONP: var=([...]);
                 start = text.find('([')
