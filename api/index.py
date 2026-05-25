@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta
 import random
 import os
+import urllib.request
 
 DEFAULT_STOCKS = [
     {"代码": "300001", "名称": "特锐德", "最新价": 22.58, "涨跌幅": 5.23, "总市值": 2358000000, "流通市值": 2100000000, "净利润同比增长率": 158.5, "成交额": 125000000},
@@ -595,13 +596,31 @@ class handler(BaseHTTPRequestHandler):
     
     def do_screening(self):
         """
-        执行股票筛选 - 返回最新的本地数据
-        由于Vercel Serverless环境无法直接访问外部API，
-        数据由GitHub Actions每日更新到 screening_result.json
+        获取最新筛选数据
+        优先从GitHub获取（确保每次都是最新数据），
+        其次读取本地文件，最后返回默认数据
         """
-        # 尝试读取本地数据文件
+        # 方案1: 从GitHub Raw获取最新数据（确保部署后也能看到最新结果）
         try:
-            # 首先尝试读取根目录的 screening_result.json
+            github_url = ('https://raw.githubusercontent.com/WaveZhou/'
+                         'a-stock-screener/master/screening_result.json')
+            req = urllib.request.Request(github_url, headers={
+                'User-Agent': 'Mozilla/5.0'
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if data and 'stocks' in data and len(data['stocks']) > 0:
+                    return {
+                        'success': True,
+                        'stocks': data['stocks'],
+                        'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                        'message': f'数据来源: GitHub (共{len(data["stocks"])}只)'
+                    }
+        except Exception as e:
+            print(f"从GitHub获取数据失败: {e}")
+
+        # 方案2: 读取本地文件
+        try:
             result_path = os.path.join(os.path.dirname(__file__), '..', 'screening_result.json')
             if os.path.exists(result_path):
                 with open(result_path, 'r', encoding='utf-8') as f:
@@ -611,13 +630,12 @@ class handler(BaseHTTPRequestHandler):
                             'success': True,
                             'stocks': data['stocks'],
                             'timestamp': data.get('timestamp', datetime.now().isoformat()),
-                            'message': '已获取最新筛选数据'
+                            'message': '已获取本地筛选数据'
                         }
         except Exception as e:
             print(f"读取根目录数据文件失败: {e}")
         
         try:
-            # 尝试读取 api 目录下的数据文件
             result_path = os.path.join(os.path.dirname(__file__), 'screening_result.json')
             if os.path.exists(result_path):
                 with open(result_path, 'r', encoding='utf-8') as f:
@@ -627,12 +645,12 @@ class handler(BaseHTTPRequestHandler):
                             'success': True,
                             'stocks': data['stocks'],
                             'timestamp': data.get('timestamp', datetime.now().isoformat()),
-                            'message': '已获取最新筛选数据'
+                            'message': '已获取本地筛选数据'
                         }
         except Exception as e:
             print(f"读取api目录数据文件失败: {e}")
         
-        # 如果都没有，返回默认数据
+        # 方案3: 返回默认数据
         return {
             'success': True,
             'stocks': DEFAULT_STOCKS,
