@@ -49,6 +49,7 @@ class AStockDataCollector:
         """获取沪深A股实时行情，多主机容错"""
         print("  从东方财富获取沪深A股行情...")
 
+        # 方案1: push2 行情API（国内环境通常可用）
         hosts = [
             "https://82.push2.eastmoney.com",
             "https://push2.eastmoney.com",
@@ -66,8 +67,96 @@ class AStockDataCollector:
             except Exception as e:
                 print(f"  [FAIL] {host}: {e}")
 
+        # 方案2: datacenter API（海外可用的备用方案）
+        print("  push2行情接口均失败，尝试datacenter备用方案...")
+        try:
+            df = self._fetch_stock_list_datacenter()
+            if not df.empty and len(df) > 50:
+                print(f"  [OK] datacenter备用方案: 获取到 {len(df)} 只股票")
+                return df
+        except Exception as e:
+            print(f"  [FAIL] datacenter备用方案: {e}")
+
         print("  所有主机均失败")
         return pd.DataFrame()
+
+    def _fetch_stock_list_datacenter(self):
+        """使用新浪财经API获取小市值股票列表（海外友好备用方案）
+        新浪API对海外IP无限制，支持按市值排序"""
+        print("    使用新浪财经API获取小市值股票...")
+        sina_session = requests.Session()
+        sina_session.trust_env = False
+        sina_session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://finance.sina.com.cn',
+        })
+
+        all_stocks = []
+        # 从沪市A股和深市A股分别获取市值最小的股票
+        for node in ['sh_a', 'sz_a']:
+            for page in range(1, 3):  # 每个市场取2页×80=160只
+                try:
+                    url = ('https://vip.stock.finance.sina.com.cn/'
+                           'quotes_service/api/json_v2.php/'
+                           'Market_Center.getHQNodeData')
+                    params = {
+                        'page': str(page),
+                        'num': '80',
+                        'sort': 'mktcap',
+                        'asc': '1',
+                        'node': node,
+                        'symbol': '',
+                        '_s_r_a': 'init',
+                    }
+                    resp = sina_session.get(url, params=params, timeout=20)
+                    stocks = resp.json()
+                    if stocks:
+                        all_stocks.extend(stocks)
+                        print(f"    {node} page {page}: {len(stocks)} 只")
+                    time.sleep(0.3)
+                except Exception as e:
+                    print(f"    {node} page {page} 失败: {e}")
+
+        if not all_stocks:
+            return pd.DataFrame()
+
+        # 按市值排序，转换为标准格式
+        all_stocks.sort(key=lambda x: x.get('mktcap', 999999999))
+
+        records = []
+        for item in all_stocks:
+            name = item.get('name', '')
+            symbol = item.get('symbol', '')
+            code = item.get('code', '')
+            # 过滤ST、退市
+            if 'ST' in name or '退' in name:
+                continue
+            # 过滤无效数据
+            mktcap = item.get('mktcap', 0)
+            if not mktcap or mktcap <= 0:
+                continue
+            records.append({
+                '代码': code,
+                '名称': name,
+                '最新价': self._safe_float(item.get('trade')),
+                '涨跌幅': self._safe_float(item.get('changepercent')),
+                '成交量': self._safe_float(item.get('volume')),
+                '成交额': self._safe_float(item.get('amount')),
+                '最高': self._safe_float(item.get('high')),
+                '最低': self._safe_float(item.get('low')),
+                '今开': self._safe_float(item.get('open')),
+                '昨收': self._safe_float(item.get('settlement')),
+                '总市值': mktcap * 10000,  # 万元转元
+                '流通市值': self._safe_float(item.get('nmc', 0)) * 10000,
+                '换手率': self._safe_float(item.get('turnoverratio')),
+            })
+
+        df = pd.DataFrame(records)
+        df = df[df['总市值'] > 0]
+        print(f"    新浪API获取到 {len(df)} 只有效股票")
+        return df
 
     def _fetch_stock_list(self, host):
         """从指定主机获取股票列表 - 直接按市值升序排列获取前200"""
@@ -284,31 +373,62 @@ class AStockDataCollector:
         return results
 
     def _calc_period_gains(self, stock_code):
-        """计算单只股票的周/月/年涨幅"""
-        secid = (f"1.{stock_code}" if stock_code.startswith('6')
-                 else f"0.{stock_code}")
-        url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-        params = {
-            'secid': secid,
-            'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
-            'fields1': 'f1,f2,f3,f4,f5,f6',
-            'fields2': 'f51,f52,f53',
-            'klt': '101',
-            'fqt': '1',
-            'beg': (datetime.now() - timedelta(days=400)).strftime("%Y%m%d"),
-            'end': datetime.now().strftime("%Y%m%d"),
-        }
-        resp = self.session.get(url, params=params, timeout=15)
-        klines = resp.json().get('data', {}).get('klines', [])
-        if not klines:
-            return {}
-
+        """计算单只股票的周/月/年涨幅（东方财富+新浪双源）"""
         closes, dates = [], []
-        for line in klines:
-            p = line.split(',')
-            if len(p) >= 3:
-                closes.append(float(p[2]))
-                dates.append(p[0])
+
+        # 方案1: 东方财富K线
+        try:
+            secid = (f"1.{stock_code}" if stock_code.startswith('6')
+                     else f"0.{stock_code}")
+            url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            params = {
+                'secid': secid,
+                'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+                'fields1': 'f1,f2,f3,f4,f5,f6',
+                'fields2': 'f51,f52,f53',
+                'klt': '101',
+                'fqt': '1',
+                'beg': (datetime.now() - timedelta(days=400)).strftime("%Y%m%d"),
+                'end': datetime.now().strftime("%Y%m%d"),
+            }
+            resp = self.session.get(url, params=params, timeout=10)
+            klines = resp.json().get('data', {}).get('klines', [])
+            for line in klines:
+                p = line.split(',')
+                if len(p) >= 3:
+                    closes.append(float(p[2]))
+                    dates.append(p[0])
+        except Exception:
+            pass
+
+        # 方案2: 新浪K线（如果东方财富失败）
+        if len(closes) < 30:
+            try:
+                sina_session = requests.Session()
+                sina_session.trust_env = False
+                sina_session.headers.update({
+                    'User-Agent': 'Mozilla/5.0',
+                    'Referer': 'https://finance.sina.com.cn',
+                })
+                prefix = 'sh' if stock_code.startswith('6') else 'sz'
+                url = (f"https://quotes.sina.cn/cn/api/jsonp_v2.php/"
+                       f"var/CN_MarketDataService.getKLineData"
+                       f"?symbol={prefix}{stock_code}"
+                       f"&scale=240&ma=no&datalen=250")
+                resp = sina_session.get(url, timeout=10)
+                text = resp.text
+                # 解析 JSONP: var=([...]);
+                start = text.find('([')
+                end = text.rfind('])')
+                if start > 0 and end > start:
+                    import json
+                    data = json.loads(text[start + 1:end + 1])
+                    closes, dates = [], []
+                    for item in data:
+                        closes.append(float(item['close']))
+                        dates.append(item['day'][:10])
+            except Exception:
+                pass
 
         if len(closes) < 2:
             return {}

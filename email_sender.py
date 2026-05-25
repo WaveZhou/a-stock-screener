@@ -9,8 +9,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
+
+# 北京时间 UTC+8
+BJT = timezone(timedelta(hours=8))
 
 
 class EmailSender:
@@ -51,7 +54,7 @@ class EmailSender:
         <body>
             <h1>📊 A股小市值股票筛选报告</h1>
             <p class="info">生成时间: {timestamp}</p>
-            <p class="info">筛选条件: 市值倒数1000名中，归母净利润增速前30</p>
+            <p class="info">筛选条件: 市值倒数100名中，归母净利润增速前30</p>
             
             <h2>📈 筛选结果概览</h2>
             <p>共筛选出 <strong>{len(stocks_data)}</strong> 只股票</p>
@@ -112,7 +115,7 @@ class EmailSender:
             
             <div class="footer">
                 <p>本报告由A股小市值股票筛选系统自动生成</p>
-                <p>访问Web界面查看详细K线图: <a href="https://your-vercel-app.vercel.app">点击查看</a></p>
+                <p>访问Web界面查看详细K线图: <a href="https://a-stock-screener.vercel.app">点击查看</a></p>
                 <p>免责声明：本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。</p>
             </div>
         </body>
@@ -124,13 +127,13 @@ class EmailSender:
     def send_screening_result(self, stocks_data, attachment_path=None):
         """发送筛选结果邮件"""
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now(BJT).strftime("%Y-%m-%d %H:%M:%S")
             
             # 创建邮件
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.receiver_email
-            msg['Subject'] = f"📊 A股小市值股票筛选报告 - {datetime.now().strftime('%Y年%m月%d日')}"
+            msg['Subject'] = f"📊 A股小市值股票筛选报告 - {datetime.now(BJT).strftime('%Y年%m月%d日')}"
             
             # 添加HTML内容
             html_content = self.create_email_content(stocks_data, timestamp)
@@ -154,11 +157,11 @@ class EmailSender:
             server.send_message(msg)
             server.quit()
             
-            print(f"✅ 邮件发送成功！发送至: {self.receiver_email}")
+            print(f"[OK] 邮件发送成功！发送至: {self.receiver_email}")
             return True
             
         except Exception as e:
-            print(f"❌ 邮件发送失败: {e}")
+            print(f"[FAIL] 邮件发送失败: {e}")
             return False
     
     def send_error_notification(self, error_message):
@@ -167,13 +170,13 @@ class EmailSender:
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.receiver_email
-            msg['Subject'] = f"⚠️ A股筛选系统运行异常 - {datetime.now().strftime('%Y年%m月%d日')}"
+            msg['Subject'] = f"⚠️ A股筛选系统运行异常 - {datetime.now(BJT).strftime('%Y年%m月%d日')}"
             
             html_content = f"""
             <html>
             <body>
                 <h2 style="color: #dc3545;">⚠️ 系统运行异常</h2>
-                <p><strong>时间:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p><strong>时间:</strong> {datetime.now(BJT).strftime('%Y-%m-%d %H:%M:%S')}</p>
                 <p><strong>错误信息:</strong></p>
                 <pre style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">{error_message}</pre>
                 <p>请检查系统日志或手动运行脚本排查问题。</p>
@@ -188,11 +191,11 @@ class EmailSender:
             server.send_message(msg)
             server.quit()
             
-            print("✅ 错误通知邮件已发送")
+            print("[OK] 错误通知邮件已发送")
             return True
             
         except Exception as e:
-            print(f"❌ 错误通知邮件发送失败: {e}")
+            print(f"[FAIL] 错误通知邮件发送失败: {e}")
             return False
 
 
