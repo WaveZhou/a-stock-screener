@@ -417,14 +417,14 @@ class AStockDataCollector:
         except Exception:
             pass
 
-        # 方案2: 新浪K线（如果东方财富失败）
+        # 方案2: 新浪K线（如果东方财富失败）- 使用前复权数据
         if len(closes) < 30:
             try:
                 prefix = 'sh' if stock_code.startswith('6') else 'sz'
                 url = (f"https://quotes.sina.cn/cn/api/jsonp_v2.php/"
                        f"var/CN_MarketDataService.getKLineData"
                        f"?symbol={prefix}{stock_code}"
-                       f"&scale=240&ma=no&datalen=250")
+                       f"&scale=240&ma=no&datalen=250&fq=qfq")
                 resp = requests.get(url, timeout=5,
                                     headers={'User-Agent': 'Mozilla/5.0',
                                              'Referer': 'https://finance.sina.com.cn'})
